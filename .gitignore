@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+outputs/
+*.mp4
+*.jpg
+*.wav
+*.mp3
