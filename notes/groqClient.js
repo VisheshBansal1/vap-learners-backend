@@ -4,10 +4,10 @@ const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 // FIXED: llama-3.3-70b-versatile does NOT exist on Groq free tier — returns 404.
 // Correct free model names:
-//   llama3-70b-8192      ← best quality FREE  ✅ use this
+//   openai/gpt-oss-20b   ← Groq GPT OSS 20B  ✅ use this
 //   llama3-8b-8192       ← fastest FREE
 //   mixtral-8x7b-32768   ← long context FREE
-const MODEL = "llama3-70b-8192";
+const MODEL = "openai/gpt-oss-20b";
 
 export async function callGroq(prompt, options = {}) {
   const { maxTokens = 800, timeoutMs = 20_000 } = options;
