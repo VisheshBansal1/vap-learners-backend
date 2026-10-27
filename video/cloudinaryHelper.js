@@ -37,7 +37,6 @@ export async function cloudinaryDelete(publicId, resourceType = "video") {
   });
 
   try {
-    const url = `https://api.cloudinary.com/v1_1/${CLOUD()}/resources/${resourceType}/upload`;
     const res = await fetch(
       `https://api.cloudinary.com/v1_1/${CLOUD()}/${resourceType}/destroy`,
       {

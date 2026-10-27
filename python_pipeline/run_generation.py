@@ -5,7 +5,7 @@ Bridge script spawned by Node.js videoWorker.js.
 
 Env vars set by Node before spawning:
   VIDEO_ID, USER_ID, TOPIC, DIFFICULTY, VOICE,
-  GROQ_API_KEY, CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY,
+  GEMINI_API_KEYS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY,
   CLOUDINARY_API_SECRET, FIREBASE_CRED_JSON
 
 Prints ONE JSON object per line to stdout → Node reads and fans to SSE.
@@ -21,6 +21,12 @@ _THIS     = Path(__file__).parent.resolve()
 _ROOT     = _THIS.parent.parent
 _PIPELINE = _ROOT / "vavina_learner_video_generator"
 sys.path.insert(0, str(_PIPELINE))
+sys.path.insert(0, str(_THIS))
+
+# Route every `from groq import Groq` in the video pipeline through Gemini
+# (model waterfall + multi-key failover) without editing groq_script.py.
+import gemini_compat
+gemini_compat.install_as_groq()
 
 VIDEO_ID   = os.environ["VIDEO_ID"]
 USER_ID    = os.environ["USER_ID"]
@@ -36,6 +42,13 @@ def push(progress: int, message: str, status: str = "processing", **extra):
 
 
 def setup_cloudinary():
+    missing = [k for k in ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
+               if not os.environ.get(k)]
+    if missing:
+        raise RuntimeError("Video storage is not configured on the server (missing: "
+                           + ", ".join(missing) + ")")
+    if not gemini_compat.load_keys():
+        raise RuntimeError("AI is not configured on the server (set GEMINI_API_KEYS)")
     import cloudinary
     cloudinary.config(
         cloud_name  = os.environ["CLOUDINARY_CLOUD_NAME"],
@@ -96,6 +109,7 @@ def update_firestore(video_url, thumb_url, duration, file_size):
 
 
 def run():
+    output_path = thumb_path = None
     try:
         setup_cloudinary()
         push(3, "Detecting programming language…")
@@ -105,7 +119,7 @@ def run():
         lang_name = language_display_name(lang)
         push(6, f"Language: {lang_name}")
 
-        push(8, f"Generating {lang_name} script via Groq AI…")
+        push(8, f"Generating {lang_name} script with Gemini AI…")
         from script.groq_script import GroqScriptGenerator
         script = GroqScriptGenerator().generate(
             TOPIC, difficulty=DIFFICULTY, language=lang)
@@ -181,6 +195,10 @@ def run():
         import cv2, numpy as np
         thumb_path = output_path.with_suffix(".jpg")
         cap = cv2.VideoCapture(str(output_path))
+        # Frame 0 is usually a black fade-in — grab a frame ~12% in (max 6 s) instead.
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, min(int(total * 0.12), 24 * 6))
         ret, frame = cap.read(); cap.release()
         if ret: cv2.imwrite(str(thumb_path), frame)
         else:   cv2.imwrite(str(thumb_path), np.zeros((720, 1280, 3), dtype=np.uint8))
@@ -209,6 +227,12 @@ def run():
         traceback.print_exc(file=sys.stderr)
         push(0, f"Error: {exc}", status="failed", error=str(exc))
         sys.exit(1)
+    finally:
+        for p in (output_path, thumb_path):     # never leave big temp files behind
+            try:
+                if p: Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

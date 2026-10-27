@@ -1,68 +1,95 @@
 import express from "express";
-import { callGroq } from "./groqClient.js";
+import {
+  generate,
+  AiBusyError,
+  AiBlockedError,
+  GeminiError,
+} from "../ai/geminiClient.js";
 import { notesPrompt } from "./notesPrompt.js";
 import { getNotes, appendSection } from "./notesStore.js";
+import { verifyToken } from "../middleware/firebase.js";
+import { rateLimit } from "../middleware/rateLimit.js";
 
 const router = express.Router();
 
 /* ---------------- CONFIG ---------------- */
-const MAX_TOKENS = 800;
-const AI_TIMEOUT_MS = 12_000;
+const MAX_TOKENS = 900;
 const MAX_TOPIC_LENGTH = 200;
+const MAX_ID_LENGTH = 120;
 
-/* ---------------- UTILS ---------------- */
-function withTimeout(promise, ms) {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error("AI request timed out")), ms);
-  });
-  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
-}
+/* ---------------- GUARDS ----------------
+ * The old route was open to the whole internet with CORS "*", so anyone who
+ * found the URL could burn the shared AI quota. Now: Firebase login required
+ * (set ALLOW_ANON_AI=true only for local development) + a per-user limit. */
+if (process.env.ALLOW_ANON_AI !== "true") router.use(verifyToken);
+router.use(
+  rateLimit({
+    windowMs: 10 * 60_000,
+    max: 20,
+    message: "You've generated a lot of notes in a short time. Please wait a few minutes.",
+  })
+);
 
-/* ---------------- PREVIOUS TOPIC LOGIC ---------------- */
-function buildPreviousTopicTitle(noteId) {
-  const notes = getNotes(noteId);
-  if (!notes || !Array.isArray(notes.sections)) return "";
-  if (notes.sections.length === 0) return "";
-  const lastSection = notes.sections[notes.sections.length - 1];
-  return lastSection?.topic || "";
-}
+const clean = (v, max) =>
+  typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "";
 
-/* ---------------- ROUTES ---------------- */
-// Mounted at /api/notes → full path POST /api/notes/generate-note
+/* ---------------- ROUTES ----------------
+ * Mounted at /api/notes → POST /api/notes/generate-note
+ * Body: { topic, noteId?, previousTopic? }
+ * `previousTopic` is sent by the app (the last section of THIS note), so the
+ * continuity feature works per-note and survives server restarts. */
 router.post("/generate-note", async (req, res) => {
+  const topic = clean(req.body?.topic, MAX_TOPIC_LENGTH + 1);
+  if (!topic) return res.status(400).json({ error: "topic is required" });
+  if (topic.length > MAX_TOPIC_LENGTH) return res.status(400).json({ error: "Topic is too long" });
+
+  const noteId = clean(req.body?.noteId, MAX_ID_LENGTH) || "scratch";
+  // Namespaced by user so one learner's history can never leak into another's prompt.
+  const storeKey = `${req.uid || "anon"}:${noteId}`;
+
+  let previousTopic = clean(req.body?.previousTopic, MAX_TOPIC_LENGTH);
+  if (!previousTopic) {
+    const last = getNotes(storeKey).sections.at(-1);
+    previousTopic = last?.topic || "";
+  }
+
   try {
-    const { noteId, topic } = req.body;
-
-    if (!noteId || !topic)
-      return res.status(400).json({ error: "noteId and topic are required" });
-
-    if (typeof topic !== "string" || topic.trim() === "")
-      return res.status(400).json({ error: "Invalid topic" });
-
-    if (topic.length > MAX_TOPIC_LENGTH)
-      return res.status(400).json({ error: "Topic is too long" });
-
-    console.log("🧠 Generating notes for:", topic);
-
-    const previousTopic = buildPreviousTopicTitle(noteId);
-    const aiRequest = callGroq(notesPrompt(topic, previousTopic), { maxTokens: MAX_TOKENS });
-    const content = await withTimeout(aiRequest, AI_TIMEOUT_MS);
-
-    appendSection(noteId, {
-      sectionId: Date.now().toString(),
-      topic,
-      content,
-      source: "groq",
-      createdAt: new Date().toISOString(),
+    const result = await generate({
+      prompt: notesPrompt(topic, previousTopic),
+      temperature: 0.4,
+      maxTokens: MAX_TOKENS,
+      totalTimeoutMs: 40_000,
     });
 
-    return res.status(200).json(getNotes(noteId));
+    const section = {
+      sectionId: Date.now().toString(),
+      topic,
+      content: result.text.trim(),
+      source: "gemini",
+      model: result.model,
+      createdAt: new Date().toISOString(),
+    };
+    appendSection(storeKey, section);
+
+    // `sections: [section]` keeps older app builds working (they read sections.last.content).
+    return res.status(200).json({ noteId, topic, content: section.content, model: result.model, section, sections: [section] });
   } catch (error) {
+    if (error instanceof AiBusyError) {
+      res.setHeader("Retry-After", String(error.retryAfterSec));
+      return res.status(503).json({
+        error: "The AI is busy right now. Please try again shortly.",
+        retryAfterSec: error.retryAfterSec,
+      });
+    }
+    if (error instanceof AiBlockedError) {
+      return res.status(422).json({ error: error.message });
+    }
+    if (error instanceof GeminiError && error.kind === "noKey") {
+      console.error("❌ NOTES: no Gemini key configured");
+      return res.status(503).json({ error: "AI is not configured on the server yet." });
+    }
     console.error("❌ NOTES ERROR:", error.message);
-    if (error.message.includes("timed out"))
-      return res.status(504).json({ error: "AI took too long to respond" });
-    return res.status(500).json({ error: "AI generation failed", details: error.message });
+    return res.status(500).json({ error: "AI generation failed" });
   }
 });
 

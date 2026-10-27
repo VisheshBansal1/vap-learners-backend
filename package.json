@@ -1,12 +1,13 @@
 {
   "name": "vavina-learners-backend",
-  "version": "3.0.0",
-  "description": "Unified Node.js backend — notes, news, video generation with Cloudinary storage",
+  "version": "4.0.0",
+  "description": "Unified Node.js backend \u2014 Gemini notes, news, video generation with Cloudinary storage",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test": "node --test test/geminiClient.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -18,5 +19,8 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
