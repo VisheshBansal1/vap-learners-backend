@@ -2,6 +2,7 @@ import express from "express";
 import cors    from "cors";
 import dotenv  from "dotenv";
 
+import aiRouter    from "./ai/ai.routes.js";
 import notesRouter from "./notes/notes.routes.js";
 import newsRouter  from "./news/news.routes.js";
 import videoRouter from "./video/video.routes.js";
@@ -46,6 +47,7 @@ app.get("/health", (_req, res) => {
 });
 
 /* ── ROUTES ── */
+app.use("/api/ai",    aiRouter);
 app.use("/api/notes", notesRouter);
 app.use("/api/news",  newsRouter);
 app.use("/api/video", videoRouter);

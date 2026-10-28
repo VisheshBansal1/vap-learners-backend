@@ -48,6 +48,7 @@ backend/
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | none | Services status |
+| POST | `/api/ai/generate`, `/api/ai/stream` | 🔒 Firebase | All app AI features (one-shot + SSE streaming) |
 | POST | `/api/notes/generate-note` | 🔒 Firebase | AI notes (body: `topic`, `noteId?`, `previousTopic?`) |
 | GET | `/api/news/daily-tech-news` | none | Tech news |
 | POST | `/api/video/generate` | 🔒 Firebase | Start generation |
@@ -105,17 +106,4 @@ npm run dev
 
 ## Deploy on Render
 
-Build command:
-```
-npm install && pip3 install cloudinary firebase-admin edge-tts opencv-python-headless numpy python-dotenv && apt-get install -y ffmpeg espeak-ng fonts-dejavu 2>/dev/null || true
-```
-
-Start command: `npm start`
-
-Env vars to add in Render dashboard:
-1. GEMINI_API_KEYS
-2. NEWS_API_KEY
-3. CLOUDINARY_CLOUD_NAME
-4. CLOUDINARY_API_KEY
-5. CLOUDINARY_API_SECRET
-6. FIREBASE_CRED_JSON
+See **RENDER_GUIDE.md** (Docker-based, installs ffmpeg/Python automatically).

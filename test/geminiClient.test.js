@@ -8,6 +8,7 @@ import http from "node:http";
 
 import {
   generate,
+  generateStream,
   resetAiState,
   getAiStatus,
   toContents,
@@ -33,7 +34,7 @@ before(async () => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
-      const m = req.url.match(/\/models\/([^:]+):generateContent/);
+      const m = req.url.match(/\/models\/([^:]+):(?:stream)?[Gg]enerateContent/);
       const call = {
         model: m?.[1],
         key: req.headers["x-goog-api-key"],
@@ -41,6 +42,10 @@ before(async () => {
       };
       calls.push(call);
       const r = script(call, calls.length);
+      if (r.sse) {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        return res.end(r.sse.map((t) => `data: ${JSON.stringify(typeof t === "string" ? okBody(t) : t)}\n\n`).join(""));
+      }
       res.writeHead(r.status, { "Content-Type": "application/json", ...(r.headers || {}) });
       res.end(JSON.stringify(r.body));
     });
@@ -233,4 +238,44 @@ test("classifyFailure + Pacific-midnight helper behave sanely", () => {
   assert.equal(classifyFailure(401, null).scope, "key");
   const ms = msUntilPacificMidnight(new Date("2026-10-25T10:00:00Z")); // 03:00 PDT → 21h left
   assert.ok(Math.abs(ms - 21 * 3600_000) < 2000, `got ${ms}`);
+});
+
+// ── streaming ────────────────────────────────────────────────────────────────
+
+async function collect(it) {
+  let out = "";
+  for await (const t of it) out += t;
+  return out;
+}
+
+test("stream: yields chunks in order and reports the model", async () => {
+  script = () => ({ sse: ["Hel", "lo ", "world"] });
+  let model = null;
+  const text = await collect(generateStream({ prompt: "x", onModel: (m) => (model = m) }));
+  assert.equal(text, "Hello world");
+  assert.equal(model, "m1");
+});
+
+test("stream: 429 before the first chunk fails over to the next model", async () => {
+  script = (c) =>
+    c.model === "m1"
+      ? { status: 429, body: errBody(429, "RESOURCE_EXHAUSTED", "q", [{ retryDelay: "30s" }]) }
+      : { sse: ["from m2"] };
+  assert.equal(await collect(generateStream({ prompt: "x" })), "from m2");
+  assert.deepEqual(calls.map((c) => c.model), ["m1", "m2"]);
+});
+
+test("stream: safety block throws AiBlockedError", async () => {
+  script = () => ({ sse: [{ promptFeedback: { blockReason: "SAFETY" } }] });
+  await assert.rejects(() => collect(generateStream({ prompt: "x" })), AiBlockedError);
+});
+
+test("stream: empty stream moves on to the next model", async () => {
+  script = (c) => (c.model === "m1" ? { sse: [] } : { sse: ["ok"] });
+  assert.equal(await collect(generateStream({ prompt: "x" })), "ok");
+});
+
+test("stream: everything exhausted -> AiBusyError", async () => {
+  script = () => ({ status: 503, body: errBody(503, "UNAVAILABLE", "busy") });
+  await assert.rejects(() => collect(generateStream({ prompt: "x" })), AiBusyError);
 });

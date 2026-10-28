@@ -424,6 +424,143 @@ export async function generate(opts = {}) {
   throw new AiBusyError("The AI is very busy right now. Please try again in a minute.", { retryAfterSec, attempts });
 }
 
+/**
+ * Streaming variant: `for await (const chunk of generateStream({...}))`.
+ * Failover happens only BEFORE the first chunk arrives — once text has been
+ * sent to the learner we cannot silently switch models, so a mid-answer drop
+ * is thrown to the caller.
+ * Closing the iterator (client disconnected) aborts the upstream request.
+ */
+export async function* generateStream(opts = {}) {
+  const keys = loadKeys();
+  if (!keys.length) {
+    throw new GeminiError("No Gemini API key configured. Set GEMINI_API_KEYS on the server.", { kind: "noKey" });
+  }
+  const models = loadModels();
+  const o = {
+    system: opts.system,
+    messages: opts.messages?.length ? opts.messages : [{ role: "user", content: opts.prompt ?? "" }],
+    temperature: opts.temperature ?? 0.7,
+    maxTokens: opts.maxTokens ?? 2048,
+    json: false,
+  };
+  const connectMs = opts.connectTimeoutMs ?? 25_000;
+  const idleMs = opts.idleTimeoutMs ?? 30_000;
+  const deadline = Date.now() + (opts.totalConnectMs ?? 45_000);
+  stats.calls++;
+
+  for (let pass = 0; pass < 2; pass++) {
+    let soonest = Infinity;
+    for (const model of models) {
+      for (let i = 0; i < keys.length; i++) {
+        const wait = pairWait(model, i);
+        if (wait > 0) { soonest = Math.min(soonest, wait); continue; }
+        if (Date.now() >= deadline) {
+          stats.fail++;
+          throw new AiBusyError("AI is taking too long right now. Please try again.", { retryAfterSec: 15 });
+        }
+
+        let useThinking = true;
+        for (let tries = 0; tries < 2; tries++) {
+          const ctrl = new AbortController();
+          let timer = setTimeout(() => ctrl.abort(), connectMs);
+          let gotText = false;
+          let blocked = false;
+          try {
+            let res;
+            try {
+              res = await fetch(`${baseUrl()}/models/${model}:streamGenerateContent?alt=sse`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-goog-api-key": keys[i] },
+                body: JSON.stringify(buildBody(model, o, useThinking)),
+                signal: ctrl.signal,
+              });
+            } catch (err) {
+              coolPair(model, i, COOLDOWN.overload, "network");
+              console.warn(`[gemini] stream ${model} key#${i} -> ${err?.name === "AbortError" ? "timeout" : "network error"}`);
+              break;
+            }
+
+            if (!res.ok) {
+              let body = null;
+              try { body = await res.json(); } catch { /* non-JSON */ }
+              const d = classifyFailure(res.status, body, res.headers);
+              if (d.kind === "thinking" && useThinking) { noThinking.add(model); useThinking = false; continue; }
+              if (d.kind === "badRequest") {
+                stats.fail++;
+                throw new GeminiError(`Gemini rejected the request: ${d.msg}`, { status: res.status, kind: "badRequest" });
+              }
+              if (d.scope === "key") keyState.set(i, { until: Date.now() + d.cooldown, reason: d.kind });
+              else coolPair(model, i, d.cooldown, d.kind);
+              console.warn(`[gemini] stream ${model} key#${i} -> ${res.status} ${d.kind}; cooling ${Math.round(d.cooldown / 1000)}s`);
+              break;
+            }
+
+            const reader = res.body.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            const arm = () => { clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), idleMs); };
+            arm();
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                arm();
+                buf += dec.decode(value, { stream: true });
+                let nl;
+                while ((nl = buf.indexOf("\n")) >= 0) {
+                  const line = buf.slice(0, nl).trim();
+                  buf = buf.slice(nl + 1);
+                  if (!line.startsWith("data:")) continue;
+                  const payload = line.slice(5).trim();
+                  if (!payload || payload === "[DONE]") continue;
+                  let data;
+                  try { data = JSON.parse(payload); } catch { continue; }
+                  if (data?.promptFeedback?.blockReason) { blocked = true; break; }
+                  const { text } = extractText(data);
+                  if (text) {
+                    gotText = true;
+                    yield text;
+                  }
+                }
+                if (blocked) break;
+              }
+            } catch (err) {
+              if (gotText || err instanceof GeminiError) throw err; // can't switch mid-answer
+              coolPair(model, i, COOLDOWN.overload, "stream");
+              break;
+            }
+
+            if (blocked) { stats.fail++; throw new AiBlockedError("That request couldn't be processed. Try rephrasing it."); }
+            if (gotText) {
+              stats.ok++;
+              stats.byModel[model] = (stats.byModel[model] || 0) + 1;
+              opts.onModel?.(model);
+              return;
+            }
+            coolPair(model, i, 5_000, "empty"); // empty stream -> next model
+            break;
+          } finally {
+            clearTimeout(timer);
+            ctrl.abort(); // no-op if finished; stops upstream if the consumer left early
+          }
+        }
+      }
+    }
+    const budget = deadline - Date.now();
+    if (soonest !== Infinity && soonest <= Math.min(8_000, budget - 1_000) && pass === 0) {
+      await sleep(soonest + 50);
+      continue;
+    }
+    break;
+  }
+
+  stats.fail++;
+  const waits = models.flatMap((m) => keys.map((_, i) => pairWait(m, i))).filter((w) => w > 0);
+  const retryAfterSec = waits.length ? Math.max(5, Math.ceil(Math.min(...waits) / 1000)) : 30;
+  throw new AiBusyError("The AI is very busy right now. Please try again in a minute.", { retryAfterSec });
+}
+
 /** Convenience: returns just the text. */
 export async function generateText(prompt, opts = {}) {
   return (await generate({ ...opts, prompt })).text;

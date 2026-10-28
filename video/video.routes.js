@@ -175,7 +175,7 @@ router.get("/:videoId/stream", wrap(async (req, res) => {
     unsubscribe();
     if (!res.writableEnded) res.end();
   };
-  req.on("close", finish);
+  res.on("close", finish); // res, not req: req "close" fires when the request body is read, not on disconnect
 
   const sub = subscribeJob(videoId, (event) => {
     send(event);

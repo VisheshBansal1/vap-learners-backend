@@ -19,7 +19,26 @@ from pathlib import Path
 
 _THIS     = Path(__file__).parent.resolve()
 _ROOT     = _THIS.parent.parent
-_PIPELINE = _ROOT / "vavina_learner_video_generator"
+
+
+def _find_pipeline() -> Path:
+    """Where the vavina_learner_video_generator folder lives (first match wins):
+       1. $VIDEO_PIPELINE_DIR
+       2. inside the backend repo   (backend/vavina_learner_video_generator)  <- Docker / Render
+       3. next to the backend repo  (../vavina_learner_video_generator)       <- original layout
+    """
+    candidates = []
+    if os.environ.get("VIDEO_PIPELINE_DIR"):
+        candidates.append(Path(os.environ["VIDEO_PIPELINE_DIR"]))
+    candidates += [_THIS.parent / "vavina_learner_video_generator",
+                   _ROOT / "vavina_learner_video_generator"]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[-1]
+
+
+_PIPELINE = _find_pipeline()
 sys.path.insert(0, str(_PIPELINE))
 sys.path.insert(0, str(_THIS))
 
