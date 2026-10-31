@@ -21,11 +21,24 @@ _THIS     = Path(__file__).parent.resolve()
 _ROOT     = _THIS.parent.parent
 
 
+_PIPELINE_SUBDIRS = ("utils", "script", "engine", "tts", "video")
+
+
+def _looks_like_pipeline(d: Path) -> bool:
+    return (d / "utils").is_dir() and (d / "script").is_dir()
+
+
+def _search_roots():
+    return [_THIS.parent, _ROOT]
+
+
 def _find_pipeline() -> Path:
-    """Where the vavina_learner_video_generator folder lives (first match wins):
+    """Locate the video-generator folder (the one that contains utils/, script/, engine/, tts/, video/).
        1. $VIDEO_PIPELINE_DIR
-       2. inside the backend repo   (backend/vavina_learner_video_generator)  <- Docker / Render
-       3. next to the backend repo  (../vavina_learner_video_generator)       <- original layout
+       2. backend/vavina_learner_video_generator      <- Docker / Render (recommended)
+       3. ../vavina_learner_video_generator           <- original local layout
+       4. any folder under the backend repo / its parent that contains utils/language_detector.py
+          (covers a renamed or nested copy of the folder)
     """
     candidates = []
     if os.environ.get("VIDEO_PIPELINE_DIR"):
@@ -33,9 +46,36 @@ def _find_pipeline() -> Path:
     candidates += [_THIS.parent / "vavina_learner_video_generator",
                    _ROOT / "vavina_learner_video_generator"]
     for c in candidates:
-        if c.is_dir():
+        if c.is_dir() and _looks_like_pipeline(c):
             return c
+
+    skip = {"node_modules", ".git", "__pycache__", "venv", ".venv"}
+    for base in _search_roots():
+        if not base.is_dir():
+            continue
+        base_depth = len(base.parts)
+        for root, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in skip]
+            if len(Path(root).parts) - base_depth > 4:
+                dirs[:] = []
+                continue
+            if "language_detector.py" in files and Path(root).name == "utils":
+                found = Path(root).parent
+                if _looks_like_pipeline(found):
+                    return found
     return candidates[-1]
+
+
+def _check_pipeline() -> None:
+    """Fail early with an explanation a developer can act on (not a bare ModuleNotFoundError)."""
+    missing = [d for d in _PIPELINE_SUBDIRS if not (_PIPELINE / d).is_dir()]
+    if missing:
+        print(f"[pipeline] using folder: {_PIPELINE}  (exists: {_PIPELINE.is_dir()})", file=sys.stderr)
+        print(f"[pipeline] missing sub-folders: {missing}", file=sys.stderr)
+        raise RuntimeError(
+            "The video engine files are not on the server "
+            f"(missing: {', '.join(missing)}). Add the 'vavina_learner_video_generator' folder "
+            "to the backend repo and redeploy.")
 
 
 _PIPELINE = _find_pipeline()
@@ -131,6 +171,7 @@ def run():
     output_path = thumb_path = None
     try:
         setup_cloudinary()
+        _check_pipeline()
         push(3, "Detecting programming language…")
 
         from utils.language_detector import detect_language, language_display_name
@@ -244,7 +285,16 @@ def run():
     except Exception as exc:
         import traceback
         traceback.print_exc(file=sys.stderr)
-        push(0, f"Error: {exc}", status="failed", error=str(exc))
+        message = str(exc)
+        if isinstance(exc, ModuleNotFoundError):
+            name = (exc.name or "").split(".")[0]
+            if name in _PIPELINE_SUBDIRS:
+                message = (f"Video engine file '{name}' is missing on the server. "
+                           "Add the full 'vavina_learner_video_generator' folder to the backend repo.")
+            else:
+                message = (f"Python package '{name}' is not installed on the server. Add it to "
+                           "vavina_learner_video_generator/requirements.txt and redeploy.")
+        push(0, f"Error: {message}", status="failed", error=message)
         sys.exit(1)
     finally:
         for p in (output_path, thumb_path):     # never leave big temp files behind

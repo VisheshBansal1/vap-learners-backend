@@ -90,6 +90,8 @@ Anything `false` = that env var is missing or misspelled (check **Environment** 
 | App says "AI is not configured on the server yet" | `GEMINI_API_KEYS` missing/empty on Render. |
 | `/health` shows `"ai": true` but app says "busy" | All models/keys are rate-limited. Add keys from more Google projects. `/health` shows each model's cooldown. |
 | App says "session expired" | `FIREBASE_CRED_JSON` wrong (not one line / wrong project). Check Logs for "Firebase Admin init failed". |
+| Video says "Video engine file 'utils' is missing" (or `No module named 'utils'`) | The `vavina_learner_video_generator/` folder (with `utils/ script/ engine/ tts/ video/` inside) is not in the deployed repo. Copy it into the backend repo root, commit, push. `/health` shows `"videoEngine": true` when it's found. |
+| Video says "Python package 'xyz' is not installed" | Add `xyz` to `vavina_learner_video_generator/requirements.txt` and redeploy. |
 | Video fails immediately | `"video": false` in `/health` → Cloudinary vars missing. Or the `vavina_learner_video_generator` folder isn't in the repo. |
 | Video fails with exit 137 | Out of memory → bigger instance. |
 | Build fails at `pip install` | Your video folder needs extra Python packages → add a `requirements.txt` inside `vavina_learner_video_generator/`; the Dockerfile installs it automatically. |

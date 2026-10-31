@@ -26,6 +26,9 @@ COPY . .
 RUN if [ -f vavina_learner_video_generator/requirements.txt ]; then \
       pip install --no-cache-dir -r vavina_learner_video_generator/requirements.txt; fi
 
+# Loud warning in the build log if the video engine folder was forgotten
+RUN [ -d vavina_learner_video_generator/utils ] || echo "WARNING: vavina_learner_video_generator/ not found in the repo - video generation will fail until you add it"
+
 # Render injects PORT; index.js already reads it.
 EXPOSE 3000
 CMD ["node", "index.js"]

@@ -327,6 +327,7 @@ export async function generate(opts = {}) {
   const attemptTimeoutMs = opts.attemptTimeoutMs ?? 25_000;
   const deadline = Date.now() + (opts.totalTimeoutMs ?? 50_000);
   const attempts = [];
+  const startedAt = Date.now();
   stats.calls++;
 
   for (let pass = 0; pass < 2; pass++) {
@@ -396,6 +397,7 @@ export async function generate(opts = {}) {
             stats.ok++;
             stats.byModel[model] = (stats.byModel[model] || 0) + 1;
             attempts.push({ model, key: i, status: 200, kind: "ok", ms: Date.now() - t0 });
+            console.log(`[gemini] ok ${model} key#${i} ${Date.now() - t0}ms (tries: ${attempts.length}, total ${Date.now() - startedAt}ms)`);
             return { text, model, keyIndex: i, finishReason, attempts };
           } catch (err) {
             if (err instanceof AiBlockedError || err instanceof GeminiError) throw err;
@@ -447,6 +449,7 @@ export async function* generateStream(opts = {}) {
   const connectMs = opts.connectTimeoutMs ?? 25_000;
   const idleMs = opts.idleTimeoutMs ?? 30_000;
   const deadline = Date.now() + (opts.totalConnectMs ?? 45_000);
+  const startedAt = Date.now();
   stats.calls++;
 
   for (let pass = 0; pass < 2; pass++) {
@@ -535,6 +538,7 @@ export async function* generateStream(opts = {}) {
             if (gotText) {
               stats.ok++;
               stats.byModel[model] = (stats.byModel[model] || 0) + 1;
+              console.log(`[gemini] ok(stream) ${model} key#${i} total ${Date.now() - startedAt}ms`);
               opts.onModel?.(model);
               return;
             }

@@ -1,6 +1,9 @@
 import express from "express";
 import cors    from "cors";
 import dotenv  from "dotenv";
+import fs      from "fs";
+import path    from "path";
+import { fileURLToPath } from "url";
 
 import aiRouter    from "./ai/ai.routes.js";
 import notesRouter from "./notes/notes.routes.js";
@@ -24,6 +27,14 @@ app.use(cors({
 app.use(express.json({ limit: "50kb" }));
 
 /* ── HEALTH ── */
+// Is the Python video engine (vavina_learner_video_generator/) deployed next to this server?
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const hasVideoEngine = () => {
+  const dirs = [process.env.VIDEO_PIPELINE_DIR, path.join(__dirname, "vavina_learner_video_generator"),
+                path.join(__dirname, "..", "vavina_learner_video_generator")].filter(Boolean);
+  return dirs.some((d) => fs.existsSync(path.join(d, "utils")) && fs.existsSync(path.join(d, "script")));
+};
+
 const hasCloudinary = () =>
   !!process.env.CLOUDINARY_CLOUD_NAME && !!process.env.CLOUDINARY_API_KEY && !!process.env.CLOUDINARY_API_SECRET;
 
@@ -37,7 +48,8 @@ app.get("/health", (_req, res) => {
       ai:         ai.configured,
       notes:      ai.configured,
       news:       !!process.env.NEWS_API_KEY,
-      video:      ai.configured && hasCloudinary(),
+      video:      ai.configured && hasCloudinary() && hasVideoEngine(),
+      videoEngine: hasVideoEngine(),
       cloudinary: hasCloudinary(),
       firebase:   !!process.env.FIREBASE_CRED_JSON,
     },
@@ -70,5 +82,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`   Gemini       : ${ai.configured ? `✓ ${ai.keys} key(s), ${ai.models.length} models in waterfall` : "✗ GEMINI_API_KEYS missing"}`);
   console.log(`   News API     : ${process.env.NEWS_API_KEY ? "✓" : "✗ NEWS_API_KEY missing"}`);
   console.log(`   Cloudinary   : ${hasCloudinary() ? "✓" : "✗ CLOUDINARY_* missing"}`);
+  console.log(`   Video engine : ${hasVideoEngine() ? "✓" : "✗ vavina_learner_video_generator/ folder not found (videos will fail)"}`);
   console.log(`   Firebase     : ${process.env.FIREBASE_CRED_JSON ? "✓" : "✗ FIREBASE_CRED_JSON missing"}\n`);
 });
